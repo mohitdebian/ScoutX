@@ -90,6 +90,11 @@ async def execute(query: str, parameters: tuple = ()) -> int:
             await db.commit()
             return cursor.lastrowid
 
+async def execute_many(query: str, parameters: List[tuple]) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.executemany(query, parameters)
+        await db.commit()
+
 async def fetch_one(query: str, parameters: tuple = ()) -> Optional[aiosqlite.Row]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row

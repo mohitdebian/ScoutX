@@ -3,7 +3,7 @@ import logging
 from typing import List, Set
 from bs4 import BeautifulSoup
 import aiohttp
-from database.db import execute, fetch_all
+from database.db import execute, execute_many, fetch_all
 
 logger = logging.getLogger(__name__)
 
@@ -65,11 +65,11 @@ INITIAL_SEED_URLS = [
 
 async def seed_initial_urls():
     """Ensure seed URLs are in the crawl queue."""
-    for url in INITIAL_SEED_URLS:
-        await execute(
-            "INSERT OR IGNORE INTO crawl_queue (url, source, priority) VALUES (?, ?, ?)",
-            (url, "seed", 10)
-        )
+    parameters = [(url, "seed", 10) for url in INITIAL_SEED_URLS]
+    await execute_many(
+        "INSERT OR IGNORE INTO crawl_queue (url, source, priority) VALUES (?, ?, ?)",
+        parameters
+    )
 
 async def discover_urls():
     """
