@@ -51,6 +51,8 @@ CREATE TABLE IF NOT EXISTS crawl_queue (
     priority INTEGER DEFAULT 0
 );
 
+CREATE INDEX IF NOT EXISTS idx_crawl_queue_priority ON crawl_queue(priority DESC);
+
 CREATE TABLE IF NOT EXISTS history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id INTEGER,
