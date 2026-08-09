@@ -1,3 +1,3 @@
-## 2024-08-07 - SQLite Connection Overhead in Discovery Agent
-**Learning:** Initial URL seeding via a loop calling `execute` internally opened and closed a new `aiosqlite` connection per URL. This repeated connection lifecycle introduced significant CPU overhead compared to a single batch insertion using `aiosqlite.Connection.executemany`.
-**Action:** Always prefer batching inserts with `executemany` when inserting seed data or bulk lists into SQLite, and avoid connection cycling inside hot loops.
+## 2024-08-09 - SQLite Queue Polling Bottleneck
+**Learning:** Polling a queue in SQLite (`SELECT * FROM crawl_queue ORDER BY priority DESC LIMIT 1`) degrades severely as the table grows because it causes a full table scan and sort on every poll.
+**Action:** Always verify that tables acting as queues have indexes on the columns used in their `ORDER BY` clauses to ensure O(1) lookups.

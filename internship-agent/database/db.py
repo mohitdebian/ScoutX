@@ -51,6 +51,9 @@ CREATE TABLE IF NOT EXISTS crawl_queue (
     priority INTEGER DEFAULT 0
 );
 
+-- Optimization: Index to speed up `ORDER BY priority DESC` in get_next_url()
+CREATE INDEX IF NOT EXISTS idx_crawl_queue_priority ON crawl_queue(priority DESC);
+
 CREATE TABLE IF NOT EXISTS history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id INTEGER,
