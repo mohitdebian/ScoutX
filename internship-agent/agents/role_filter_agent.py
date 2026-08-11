@@ -14,6 +14,13 @@ ALLOWED_ROLES = [
     "developer tools engineer intern"
 ]
 
+# Hoist list and string allocations to avoid recreating/computing on every function call
+INTERN_KEYWORDS = ["intern", "internship", "co-op", "student"]
+ROLE_PARTS_CACHE = [(role, role.replace(" intern", "").split()) for role in ALLOWED_ROLES]
+BACKEND_KEYWORDS = ["backend", "back-end", "database", "api", "infrastructure", "sql", "postgresql", "python", "go", "java"]
+FRONTEND_KEYWORDS = ["frontend", "front-end", "css", "html", "react", "vue", "ui", "ux"]
+
+
 def filter_role(title: str, description: str = "") -> bool:
     """
     Checks if the job title matches the allowed roles.
@@ -22,15 +29,14 @@ def filter_role(title: str, description: str = "") -> bool:
     title_lower = title.lower()
 
     # Fast reject if no "intern" or similar in title to avoid processing senior roles
-    if not any(word in title_lower for word in ["intern", "internship", "co-op", "student"]):
+    if not any(word in title_lower for word in INTERN_KEYWORDS):
         return False
 
     is_allowed = False
     is_full_stack = False
 
-    for role in ALLOWED_ROLES:
+    for role, role_parts in ROLE_PARTS_CACHE:
         # Simple string inclusion for now. In production, might want better tokenization
-        role_parts = role.replace(" intern", "").split()
         if all(part in title_lower for part in role_parts):
             is_allowed = True
             if "full stack" in role:
@@ -48,10 +54,8 @@ def filter_role(title: str, description: str = "") -> bool:
 def _is_backend_heavy(description: str) -> bool:
     """Analyze description to ensure full stack is backend heavy."""
     desc_lower = description.lower()
-    backend_keywords = ["backend", "back-end", "database", "api", "infrastructure", "sql", "postgresql", "python", "go", "java"]
-    frontend_keywords = ["frontend", "front-end", "css", "html", "react", "vue", "ui", "ux"]
 
-    backend_count = sum(1 for kw in backend_keywords if kw in desc_lower)
-    frontend_count = sum(1 for kw in frontend_keywords if kw in desc_lower)
+    backend_count = sum(1 for kw in BACKEND_KEYWORDS if kw in desc_lower)
+    frontend_count = sum(1 for kw in FRONTEND_KEYWORDS if kw in desc_lower)
 
     return backend_count >= frontend_count
