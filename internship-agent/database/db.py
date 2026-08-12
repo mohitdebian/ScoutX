@@ -62,6 +62,9 @@ CREATE TABLE IF NOT EXISTS history (
     FOREIGN KEY(job_id) REFERENCES jobs(id)
 );
 
+-- Optimization: Index to speed up `ORDER BY j.match_score DESC, j.date_found DESC` in sync_to_markdown()
+CREATE INDEX IF NOT EXISTS idx_jobs_sort ON jobs(match_score DESC, date_found DESC);
+
 CREATE TABLE IF NOT EXISTS resume (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     skills TEXT,
