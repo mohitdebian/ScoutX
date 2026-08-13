@@ -1,12 +1,40 @@
 import aiosqlite
 import logging
 import asyncio
+from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
 DB_PATH = settings.database_url.replace("sqlite+aiosqlite:///", "")
+
+# ⚡ Bolt: Use connection pool to avoid opening/closing DB connection on every query
+# Using asyncio.Queue ensures transaction isolation across concurrent tasks.
+_pool: Optional[asyncio.Queue] = None
+POOL_SIZE = 5
+
+async def _get_pool() -> asyncio.Queue:
+    global _pool
+    if _pool is None:
+        _pool = asyncio.Queue(maxsize=POOL_SIZE)
+        for _ in range(POOL_SIZE):
+            conn = await aiosqlite.connect(DB_PATH)
+            conn.row_factory = aiosqlite.Row
+            await _pool.put(conn)
+    return _pool
+
+@asynccontextmanager
+async def get_db_connection():
+    pool = await _get_pool()
+    conn = await pool.get()
+    try:
+        yield conn
+    except Exception:
+        await conn.rollback()
+        raise
+    finally:
+        await pool.put(conn)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS companies (
@@ -88,25 +116,23 @@ async def init_db():
         raise
 
 async def execute(query: str, parameters: tuple = ()) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with get_db_connection() as db:
         async with db.execute(query, parameters) as cursor:
             await db.commit()
             return cursor.lastrowid
 
 async def execute_many(query: str, parameters: List[tuple]) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with get_db_connection() as db:
         await db.executemany(query, parameters)
         await db.commit()
 
 async def fetch_one(query: str, parameters: tuple = ()) -> Optional[aiosqlite.Row]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
+    async with get_db_connection() as db:
         async with db.execute(query, parameters) as cursor:
             return await cursor.fetchone()
 
 async def fetch_all(query: str, parameters: tuple = ()) -> List[aiosqlite.Row]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
+    async with get_db_connection() as db:
         async with db.execute(query, parameters) as cursor:
             return await cursor.fetchall()
 
