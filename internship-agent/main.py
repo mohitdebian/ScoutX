@@ -4,7 +4,7 @@ import aiohttp
 from langgraph.graph import StateGraph, END
 from typing import TypedDict, List, Dict, Any
 
-from database.db import init_db, execute, fetch_one
+from database.db import init_db, execute, fetch_one, close_db_pool
 from providers.tokenrouter import KimiProvider
 from agents.discovery_agent import discover_urls
 from agents.crawler_agent import crawl_job
@@ -155,24 +155,28 @@ async def main():
 
     logger.info("Starting Autonomous Internship Agent...")
 
-    async with aiohttp.ClientSession() as session:
-        state = AgentState(
-            current_url="",
-            job_details={},
-            match_results={},
-            session=session,
-            provider=provider
-        )
+    try:
+        async with aiohttp.ClientSession() as session:
+            state = AgentState(
+                current_url="",
+                job_details={},
+                match_results={},
+                session=session,
+                provider=provider
+            )
 
-        # We run the compiled graph continuously.
-        # Using a generator approach for continuous execution.
-        try:
-             async for output in graph.astream(state):
-                 pass # The loop runs forever, driven by graph structure
-        except asyncio.CancelledError:
-             logger.info("Agent shut down gracefully.")
-        except Exception as e:
-             logger.error(f"Critical error in main loop: {e}")
+            # We run the compiled graph continuously.
+            # Using a generator approach for continuous execution.
+            try:
+                 async for output in graph.astream(state):
+                     pass # The loop runs forever, driven by graph structure
+            except asyncio.CancelledError:
+                 logger.info("Agent shut down gracefully.")
+            except Exception as e:
+                 logger.error(f"Critical error in main loop: {e}")
+    finally:
+        await close_db_pool()
+        logger.info("Database connection pool closed.")
 
 if __name__ == "__main__":
     try:
