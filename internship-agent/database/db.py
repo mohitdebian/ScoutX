@@ -2,11 +2,50 @@ import aiosqlite
 import logging
 import asyncio
 from typing import Optional, List, Dict, Any
+from contextlib import asynccontextmanager
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
 DB_PATH = settings.database_url.replace("sqlite+aiosqlite:///", "")
+
+# Queue-based connection pool
+POOL_SIZE = 5
+_pool: Optional[asyncio.Queue] = None
+_pool_lock: Optional[asyncio.Lock] = None
+
+async def get_pool():
+    global _pool, _pool_lock
+    if _pool_lock is None:
+        _pool_lock = asyncio.Lock()
+
+    if _pool is None:
+        async with _pool_lock:
+            if _pool is None:
+                _pool = asyncio.Queue(maxsize=POOL_SIZE)
+                for _ in range(POOL_SIZE):
+                    conn = await aiosqlite.connect(DB_PATH)
+                    await _pool.put(conn)
+    return _pool
+
+@asynccontextmanager
+async def get_db_connection():
+    pool = await get_pool()
+    conn = await pool.get()
+    try:
+        yield conn
+    finally:
+        if conn.in_transaction:
+            await conn.rollback()
+        await pool.put(conn)
+
+async def close_db_pool():
+    global _pool
+    if _pool is not None:
+        while not _pool.empty():
+            conn = _pool.get_nowait()
+            await conn.close()
+        _pool = None
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS companies (
@@ -79,7 +118,7 @@ CREATE TABLE IF NOT EXISTS settings (
 
 async def init_db():
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
+        async with get_db_connection() as db:
             await db.executescript(SCHEMA)
             await db.commit()
             logger.info("Database initialized successfully.")
@@ -88,24 +127,28 @@ async def init_db():
         raise
 
 async def execute(query: str, parameters: tuple = ()) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
+    """Execute a query. Uses connection pool to improve performance."""
+    async with get_db_connection() as db:
         async with db.execute(query, parameters) as cursor:
             await db.commit()
             return cursor.lastrowid
 
 async def execute_many(query: str, parameters: List[tuple]) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
+    """Execute many queries. Uses connection pool to improve performance."""
+    async with get_db_connection() as db:
         await db.executemany(query, parameters)
         await db.commit()
 
 async def fetch_one(query: str, parameters: tuple = ()) -> Optional[aiosqlite.Row]:
-    async with aiosqlite.connect(DB_PATH) as db:
+    """Fetch one row. Uses connection pool to improve performance."""
+    async with get_db_connection() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(query, parameters) as cursor:
             return await cursor.fetchone()
 
 async def fetch_all(query: str, parameters: tuple = ()) -> List[aiosqlite.Row]:
-    async with aiosqlite.connect(DB_PATH) as db:
+    """Fetch all rows. Uses connection pool to improve performance."""
+    async with get_db_connection() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(query, parameters) as cursor:
             return await cursor.fetchall()
