@@ -4,7 +4,7 @@ import aiohttp
 from langgraph.graph import StateGraph, END
 from typing import TypedDict, List, Dict, Any
 
-from database.db import init_db, execute, fetch_one
+from database.db import init_db, execute, fetch_one, init_pool, close_db_pool
 from providers.tokenrouter import KimiProvider
 from agents.discovery_agent import discover_urls
 from agents.crawler_agent import crawl_job
@@ -145,34 +145,38 @@ def build_graph():
     return workflow.compile()
 
 async def main():
-    await init_db()
+    await init_pool()
+    try:
+        await init_db()
 
-    # Insert mock resume for testing purposes if not exists
-    await execute("INSERT OR IGNORE INTO resume (id, skills, experience) VALUES (1, 'Python, Asyncio, SQL, APIs', '1 year backend development')")
+        # Insert mock resume for testing purposes if not exists
+        await execute("INSERT OR IGNORE INTO resume (id, skills, experience) VALUES (1, 'Python, Asyncio, SQL, APIs', '1 year backend development')")
 
-    graph = build_graph()
-    provider = KimiProvider()
+        graph = build_graph()
+        provider = KimiProvider()
 
-    logger.info("Starting Autonomous Internship Agent...")
+        logger.info("Starting Autonomous Internship Agent...")
 
-    async with aiohttp.ClientSession() as session:
-        state = AgentState(
-            current_url="",
-            job_details={},
-            match_results={},
-            session=session,
-            provider=provider
-        )
+        async with aiohttp.ClientSession() as session:
+            state = AgentState(
+                current_url="",
+                job_details={},
+                match_results={},
+                session=session,
+                provider=provider
+            )
 
-        # We run the compiled graph continuously.
-        # Using a generator approach for continuous execution.
-        try:
-             async for output in graph.astream(state):
-                 pass # The loop runs forever, driven by graph structure
-        except asyncio.CancelledError:
-             logger.info("Agent shut down gracefully.")
-        except Exception as e:
-             logger.error(f"Critical error in main loop: {e}")
+            # We run the compiled graph continuously.
+            # Using a generator approach for continuous execution.
+            try:
+                 async for output in graph.astream(state):
+                     pass # The loop runs forever, driven by graph structure
+            except asyncio.CancelledError:
+                 logger.info("Agent shut down gracefully.")
+            except Exception as e:
+                 logger.error(f"Critical error in main loop: {e}")
+    finally:
+        await close_db_pool()
 
 if __name__ == "__main__":
     try:
