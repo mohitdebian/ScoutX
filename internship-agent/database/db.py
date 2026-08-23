@@ -1,12 +1,16 @@
 import aiosqlite
 import logging
 import asyncio
+from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
 DB_PATH = settings.database_url.replace("sqlite+aiosqlite:///", "")
+
+_pool: Optional[asyncio.Queue] = None
+_all_connections: List[aiosqlite.Connection] = []
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS companies (
@@ -77,36 +81,76 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 """
 
-async def init_db():
+async def init_db(pool_size: int = 10):
+    global _pool, _all_connections
+
+    if _pool is None:
+        _pool = asyncio.Queue(maxsize=pool_size)
+        _all_connections = []
+
+        try:
+            for _ in range(pool_size):
+                conn = await aiosqlite.connect(DB_PATH)
+                await conn.execute("PRAGMA journal_mode=WAL;")
+                await conn.execute("PRAGMA busy_timeout=5000;")
+                conn.row_factory = aiosqlite.Row
+                _all_connections.append(conn)
+                _pool.put_nowait(conn)
+
+            # Initialize schema with one of the connections
+            async with get_db_connection() as db:
+                await db.executescript(SCHEMA)
+                await db.commit()
+
+            logger.info("Database and connection pool initialized successfully.")
+        except Exception as e:
+            logger.error(f"Error initializing database: {e}")
+            raise
+
+async def close_db_pool():
+    global _pool, _all_connections
+    if _all_connections:
+        for conn in _all_connections:
+            await conn.close()
+        _all_connections = []
+        _pool = None
+        logger.info("Database connection pool closed.")
+
+@asynccontextmanager
+async def get_db_connection():
+    if _pool is None:
+        raise RuntimeError("Database pool not initialized. Call init_db() first.")
+
+    conn = await _pool.get()
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.executescript(SCHEMA)
-            await db.commit()
-            logger.info("Database initialized successfully.")
-    except Exception as e:
-        logger.error(f"Error initializing database: {e}")
-        raise
+        yield conn
+    finally:
+        try:
+            if conn.in_transaction:
+                await asyncio.shield(conn.rollback())
+        except Exception as e:
+            logger.error(f"Error rolling back connection: {e}")
+        finally:
+            _pool.put_nowait(conn)
 
 async def execute(query: str, parameters: tuple = ()) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with get_db_connection() as db:
         async with db.execute(query, parameters) as cursor:
             await db.commit()
             return cursor.lastrowid
 
 async def execute_many(query: str, parameters: List[tuple]) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with get_db_connection() as db:
         await db.executemany(query, parameters)
         await db.commit()
 
 async def fetch_one(query: str, parameters: tuple = ()) -> Optional[aiosqlite.Row]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
+    async with get_db_connection() as db:
         async with db.execute(query, parameters) as cursor:
             return await cursor.fetchone()
 
 async def fetch_all(query: str, parameters: tuple = ()) -> List[aiosqlite.Row]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
+    async with get_db_connection() as db:
         async with db.execute(query, parameters) as cursor:
             return await cursor.fetchall()
 
