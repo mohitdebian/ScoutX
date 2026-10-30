@@ -2,6 +2,7 @@ import aiosqlite
 import logging
 import asyncio
 from typing import Optional, List, Dict, Any
+from contextlib import asynccontextmanager
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,55 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 """
 
+_pool: Optional[asyncio.Queue] = None
+_all_connections = []
+
+async def init_db_pool(pool_size: int = 5):
+    """Initializes the connection pool for aiosqlite."""
+    global _pool, _all_connections
+
+    # Initialize queue here to ensure it's bound to the current event loop
+    _pool = asyncio.Queue()
+    _all_connections = []
+
+    for _ in range(pool_size):
+        conn = await aiosqlite.connect(DB_PATH)
+        await conn.execute("PRAGMA journal_mode=WAL;")
+        await conn.execute("PRAGMA busy_timeout=5000;")
+        conn.row_factory = aiosqlite.Row
+
+        _all_connections.append(conn)
+        _pool.put_nowait(conn)
+
+async def close_db_pool():
+    """Gracefully closes all connections in the pool."""
+    global _pool, _all_connections
+    for conn in _all_connections:
+        await conn.close()
+    if _pool is not None:
+        while not _pool.empty():
+            _pool.get_nowait()
+    _pool = None
+    _all_connections = []
+
+@asynccontextmanager
+async def get_db_connection():
+    """Context manager to get a connection from the pool and safely return it."""
+    if _pool is None:
+        raise RuntimeError("Database pool not initialized. Call init_db_pool() first.")
+
+    conn = await _pool.get()
+    try:
+        yield conn
+    finally:
+        try:
+            # Check and rollback dangling transactions
+            await asyncio.shield(conn.rollback())
+        except Exception:
+            pass
+        finally:
+            _pool.put_nowait(conn)
+
 async def init_db():
     try:
         async with aiosqlite.connect(DB_PATH) as db:
@@ -87,26 +137,26 @@ async def init_db():
         logger.error(f"Error initializing database: {e}")
         raise
 
+# ⚡ Bolt Optimization: Using connection pool instead of creating a new connection per query
+# Impact: Reduces database latency by eliminating file descriptor and handshake overhead
 async def execute(query: str, parameters: tuple = ()) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with get_db_connection() as db:
         async with db.execute(query, parameters) as cursor:
             await db.commit()
             return cursor.lastrowid
 
 async def execute_many(query: str, parameters: List[tuple]) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with get_db_connection() as db:
         await db.executemany(query, parameters)
         await db.commit()
 
 async def fetch_one(query: str, parameters: tuple = ()) -> Optional[aiosqlite.Row]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
+    async with get_db_connection() as db:
         async with db.execute(query, parameters) as cursor:
             return await cursor.fetchone()
 
 async def fetch_all(query: str, parameters: tuple = ()) -> List[aiosqlite.Row]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
+    async with get_db_connection() as db:
         async with db.execute(query, parameters) as cursor:
             return await cursor.fetchall()
 

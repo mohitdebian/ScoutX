@@ -4,7 +4,7 @@ import aiohttp
 from langgraph.graph import StateGraph, END
 from typing import TypedDict, List, Dict, Any
 
-from database.db import init_db, execute, fetch_one
+from database.db import init_db, init_db_pool, close_db_pool, execute, fetch_one
 from providers.tokenrouter import KimiProvider
 from agents.discovery_agent import discover_urls
 from agents.crawler_agent import crawl_job
@@ -146,6 +146,7 @@ def build_graph():
 
 async def main():
     await init_db()
+    await init_db_pool()
 
     # Insert mock resume for testing purposes if not exists
     await execute("INSERT OR IGNORE INTO resume (id, skills, experience) VALUES (1, 'Python, Asyncio, SQL, APIs', '1 year backend development')")
@@ -173,6 +174,8 @@ async def main():
              logger.info("Agent shut down gracefully.")
         except Exception as e:
              logger.error(f"Critical error in main loop: {e}")
+        finally:
+             await close_db_pool()
 
 if __name__ == "__main__":
     try:
