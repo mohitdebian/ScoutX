@@ -2,11 +2,77 @@ import aiosqlite
 import logging
 import asyncio
 from typing import Optional, List, Dict, Any
+from contextlib import asynccontextmanager
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
 DB_PATH = settings.database_url.replace("sqlite+aiosqlite:///", "")
+
+_pool: Optional[asyncio.Queue] = None
+_all_connections: List[aiosqlite.Connection] = []
+_pool_lock: Optional[asyncio.Lock] = None
+POOL_SIZE = 10
+
+async def init_pool():
+    global _pool, _pool_lock
+    if _pool_lock is None:
+        _pool_lock = asyncio.Lock()
+
+    async with _pool_lock:
+        if _pool is not None:
+            return
+        _pool = asyncio.Queue(maxsize=POOL_SIZE)
+        for _ in range(POOL_SIZE):
+            conn = await aiosqlite.connect(DB_PATH)
+            await conn.execute("PRAGMA journal_mode=WAL;")
+            await conn.execute("PRAGMA busy_timeout=5000;")
+            conn.row_factory = aiosqlite.Row
+            _all_connections.append(conn)
+            _pool.put_nowait(conn)
+
+async def close_db_pool():
+    global _pool, _all_connections
+    for conn in _all_connections:
+        await conn.close()
+    _all_connections = []
+    _pool = None
+
+@asynccontextmanager
+async def get_db_connection():
+    if _pool is None:
+        await init_pool()
+    conn = await _pool.get()
+    try:
+        yield conn
+    finally:
+        conn_is_healthy = True
+        try:
+            await asyncio.shield(conn.rollback())
+        except Exception as e:
+            logger.error(f"Error rolling back connection: {e}")
+            conn_is_healthy = False
+            # Remove the unhealthy connection from tracked connections
+            if conn in _all_connections:
+                _all_connections.remove(conn)
+            try:
+                await conn.close()
+            except:
+                pass
+
+            # Create a new connection to replace it
+            try:
+                new_conn = await aiosqlite.connect(DB_PATH)
+                await new_conn.execute("PRAGMA journal_mode=WAL;")
+                await new_conn.execute("PRAGMA busy_timeout=5000;")
+                new_conn.row_factory = aiosqlite.Row
+                _all_connections.append(new_conn)
+                _pool.put_nowait(new_conn)
+            except Exception as replace_e:
+                logger.error(f"Failed to replace broken connection: {replace_e}")
+        finally:
+            if conn_is_healthy:
+                _pool.put_nowait(conn)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS companies (
@@ -79,7 +145,7 @@ CREATE TABLE IF NOT EXISTS settings (
 
 async def init_db():
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
+        async with get_db_connection() as db:
             await db.executescript(SCHEMA)
             await db.commit()
             logger.info("Database initialized successfully.")
@@ -88,25 +154,23 @@ async def init_db():
         raise
 
 async def execute(query: str, parameters: tuple = ()) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with get_db_connection() as db:
         async with db.execute(query, parameters) as cursor:
             await db.commit()
             return cursor.lastrowid
 
 async def execute_many(query: str, parameters: List[tuple]) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with get_db_connection() as db:
         await db.executemany(query, parameters)
         await db.commit()
 
 async def fetch_one(query: str, parameters: tuple = ()) -> Optional[aiosqlite.Row]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
+    async with get_db_connection() as db:
         async with db.execute(query, parameters) as cursor:
             return await cursor.fetchone()
 
 async def fetch_all(query: str, parameters: tuple = ()) -> List[aiosqlite.Row]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
+    async with get_db_connection() as db:
         async with db.execute(query, parameters) as cursor:
             return await cursor.fetchall()
 
